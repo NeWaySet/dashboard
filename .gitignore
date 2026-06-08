@@ -8,8 +8,14 @@ node_modules/
 dist/
 .vite/
 npm-debug.log*
+*.log
+*.err.log
+qa-*.png
+renders/
 
 .map-source/
+new_version_web/
+database/init/*.sql
 
 .DS_Store
 Thumbs.db

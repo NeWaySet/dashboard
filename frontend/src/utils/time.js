@@ -1,13 +1,13 @@
 const MOSCOW_TIME_ZONE = "Europe/Moscow";
 
 export const PAIR_SLOTS = [
-  { key: "1", label: "1 пара", starts_at: "09:00", ends_at: "10:30" },
-  { key: "2", label: "2 пара", starts_at: "10:40", ends_at: "12:10" },
-  { key: "3", label: "3 пара", starts_at: "12:40", ends_at: "14:10" },
-  { key: "4", label: "4 пара", starts_at: "14:20", ends_at: "15:50" },
-  { key: "5", label: "5 пара", starts_at: "16:20", ends_at: "17:50" },
-  { key: "6", label: "6 пара", starts_at: "18:00", ends_at: "19:30" },
-  { key: "7", label: "7 пара", starts_at: "19:40", ends_at: "21:10" },
+  { key: "1", label: "1 pair", starts_at: "09:00", ends_at: "10:30" },
+  { key: "2", label: "2 pair", starts_at: "10:40", ends_at: "12:10" },
+  { key: "3", label: "3 pair", starts_at: "12:40", ends_at: "14:10" },
+  { key: "4", label: "4 pair", starts_at: "14:20", ends_at: "15:50" },
+  { key: "5", label: "5 pair", starts_at: "16:20", ends_at: "17:50" },
+  { key: "6", label: "6 pair", starts_at: "18:00", ends_at: "19:30" },
+  { key: "7", label: "7 pair", starts_at: "19:40", ends_at: "21:10" },
 ];
 
 function toMinutes(value) {

@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "University Rooms Dashboard API"
     database_url: str | None = None
-    demo_mode: bool = True
+    demo_mode: bool = False
     cors_origins: str = Field(
         default="http://localhost:3000,http://localhost:5173",
         description="Comma-separated list of allowed frontend origins.",
@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     @property
     def should_use_demo_data(self) -> bool:
-        return self.demo_mode or not self.database_url
+        return self.demo_mode
 
 
 @lru_cache

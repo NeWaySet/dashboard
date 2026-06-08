@@ -22,6 +22,7 @@ class Room(BaseModel):
 class Lesson(BaseModel):
     id: int
     date: date
+    pair: int | None = None
     starts_at: time
     ends_at: time
     subject: str

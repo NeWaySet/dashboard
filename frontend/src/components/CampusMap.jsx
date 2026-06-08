@@ -5,7 +5,7 @@ import { getLessonsForRoom } from "../utils/rooms.js";
 
 const MIN_ZOOM = 0.82;
 const MAX_ZOOM = 8;
-const INITIAL_ZOOM = 1.75;
+const INITIAL_ZOOM = 1;
 const DRAG_THRESHOLD = 6;
 
 export function CampusMap({
@@ -16,17 +16,23 @@ export function CampusMap({
   lessonRoomIndex,
   highlightedLessonRoomIndex,
   searchedRoomId,
+  searchedRoomIds,
   selectedRoomId,
   activeLessonRoomIndex,
   moscowTime,
+  copy,
+  activeBlock = "all",
+  blockOptions = [],
+  visibleRoomIds,
+  onBlockChange,
   onCampusChange,
   onFloorChange,
   onSelectRoom,
 }) {
   const svgRef = useRef(null);
   const dragRef = useRef(null);
-  const lastDragRef = useRef(null);
   const touchPanRef = useRef(null);
+  const pinchRef = useRef(null);
   const floorEntries = useMemo(
     () =>
       Object.entries(floors).sort(
@@ -36,24 +42,45 @@ export function CampusMap({
   );
   const currentFloor = floors[floor] ?? floorEntries[0]?.[1];
   const hasOriginalSvg = Boolean(currentFloor.svgUrl);
+  const floorRooms = useMemo(
+    () =>
+      visibleRoomIds
+        ? currentFloor.rooms.filter((room) => visibleRoomIds.has(room.id))
+        : currentFloor.rooms,
+    [currentFloor.rooms, visibleRoomIds],
+  );
   const buildings = useMemo(
-    () => (hasOriginalSvg ? [] : getBuildingLabels(currentFloor.rooms)),
-    [currentFloor.rooms, hasOriginalSvg],
+    () => (hasOriginalSvg ? [] : getBuildingLabels(floorRooms.length > 0 ? floorRooms : currentFloor.rooms)),
+    [currentFloor.rooms, floorRooms, hasOriginalSvg],
   );
   const initialViewBox = useMemo(
-    () => getInitialViewBox(currentFloor.bounds),
-    [currentFloor.bounds],
+    () => getInitialViewBox(currentFloor.bounds, currentFloor.rooms),
+    [currentFloor.bounds, currentFloor.rooms],
   );
   const [viewBox, setViewBox] = useState(initialViewBox);
   const [isCampusMenuOpen, setIsCampusMenuOpen] = useState(false);
 
   useEffect(() => {
-    setViewBox(getInitialViewBox(currentFloor.bounds));
+    setViewBox(initialViewBox);
     dragRef.current = null;
-    lastDragRef.current = null;
     touchPanRef.current = null;
+    pinchRef.current = null;
     setIsCampusMenuOpen(false);
-  }, [currentFloor.bounds, campus.shortName, floor]);
+  }, [initialViewBox, campus.shortName, floor]);
+
+  useEffect(() => {
+    if (!selectedRoomId) {
+      return;
+    }
+
+    const selectedRoom = currentFloor.rooms.find((room) => room.id === selectedRoomId);
+
+    if (!selectedRoom) {
+      return;
+    }
+
+    setViewBox(getFocusedRoomViewBox(selectedRoom, currentFloor.bounds));
+  }, [currentFloor.bounds, currentFloor.rooms, selectedRoomId]);
 
   function updateViewBox(updater) {
     setViewBox((current) => clampViewBox(updater(current), currentFloor.bounds));
@@ -64,8 +91,11 @@ export function CampusMap({
       return;
     }
 
+    const roomNode = event.target.closest?.("[data-room-id]");
+
     dragRef.current = {
       pointerId: event.pointerId,
+      roomId: roomNode?.dataset.roomId ?? null,
       startX: event.clientX,
       startY: event.clientY,
       previousX: event.clientX,
@@ -89,18 +119,27 @@ export function CampusMap({
     }
 
     const rect = svg.getBoundingClientRect();
-    const deltaX = ((event.clientX - drag.previousX) / rect.width) * viewBox.width;
-    const deltaY = ((event.clientY - drag.previousY) / rect.height) * viewBox.height;
+    const pointerDeltaX = event.clientX - drag.previousX;
+    const pointerDeltaY = event.clientY - drag.previousY;
 
     drag.previousX = event.clientX;
     drag.previousY = event.clientY;
     drag.moved = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
 
-    updateViewBox((current) => ({
-      ...current,
-      x: current.x - deltaX,
-      y: current.y - deltaY,
-    }));
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+
+    updateViewBox((current) => {
+      const deltaX = (pointerDeltaX / rect.width) * current.width;
+      const deltaY = (pointerDeltaY / rect.height) * current.height;
+
+      return {
+        ...current,
+        x: current.x - deltaX,
+        y: current.y - deltaY,
+      };
+    });
   }
 
   function handlePointerUp(event) {
@@ -108,8 +147,15 @@ export function CampusMap({
 
     if (drag?.pointerId === event.pointerId) {
       event.currentTarget.releasePointerCapture?.(event.pointerId);
-      lastDragRef.current = { moved: drag.moved, endedAt: Date.now() };
       dragRef.current = null;
+
+      if (drag.moved <= DRAG_THRESHOLD && drag.roomId) {
+        const room = floorRooms.find((candidate) => String(candidate.id) === drag.roomId);
+
+        if (room) {
+          onSelectRoom(room);
+        }
+      }
     }
   }
 
@@ -127,40 +173,85 @@ export function CampusMap({
   }
 
   function handleTouchStart(event) {
-    if (event.touches.length < 3) {
+    if (event.touches.length === 2) {
+      event.preventDefault();
+      pinchRef.current = {
+        distance: getTouchDistance(event.touches),
+      };
       touchPanRef.current = null;
       return;
     }
 
-    event.preventDefault();
-    touchPanRef.current = getTouchCenter(event.touches);
+    if (event.touches.length >= 3) {
+      event.preventDefault();
+      touchPanRef.current = getTouchCenter(event.touches);
+      pinchRef.current = null;
+      return;
+    }
+
+    touchPanRef.current = null;
+    pinchRef.current = null;
   }
 
   function handleTouchMove(event) {
     const previousTouch = touchPanRef.current;
+    const previousPinch = pinchRef.current;
     const svg = svgRef.current;
 
-    if (!previousTouch || event.touches.length < 3 || !svg) {
+    if (!svg) {
+      return;
+    }
+
+    if (previousPinch && event.touches.length === 2) {
+      event.preventDefault();
+      const nextDistance = getTouchDistance(event.touches);
+      const nextCenter = getTouchCenter(event.touches);
+
+      if (nextDistance > 0 && previousPinch.distance > 0) {
+        zoomAroundPoint(nextCenter.x, nextCenter.y, previousPinch.distance / nextDistance);
+      }
+
+      pinchRef.current = {
+        distance: nextDistance,
+      };
+      return;
+    }
+
+    if (!previousTouch || event.touches.length < 3) {
       return;
     }
 
     event.preventDefault();
     const nextTouch = getTouchCenter(event.touches);
     const rect = svg.getBoundingClientRect();
-    const deltaX = ((nextTouch.x - previousTouch.x) / rect.width) * viewBox.width;
-    const deltaY = ((nextTouch.y - previousTouch.y) / rect.height) * viewBox.height;
+    const pointerDeltaX = nextTouch.x - previousTouch.x;
+    const pointerDeltaY = nextTouch.y - previousTouch.y;
 
     touchPanRef.current = nextTouch;
-    updateViewBox((current) => ({
-      ...current,
-      x: current.x - deltaX,
-      y: current.y - deltaY,
-    }));
+
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+
+    updateViewBox((current) => {
+      const deltaX = (pointerDeltaX / rect.width) * current.width;
+      const deltaY = (pointerDeltaY / rect.height) * current.height;
+
+      return {
+        ...current,
+        x: current.x - deltaX,
+        y: current.y - deltaY,
+      };
+    });
   }
 
   function handleTouchEnd(event) {
     if (event.touches.length < 3) {
       touchPanRef.current = null;
+    }
+
+    if (event.touches.length !== 2) {
+      pinchRef.current = null;
     }
   }
 
@@ -201,7 +292,7 @@ export function CampusMap({
   }
 
   function handleResetView() {
-    setViewBox(getFitViewBox(currentFloor.bounds));
+    setViewBox(initialViewBox);
   }
 
   function zoomAroundMapCenter(factor) {
@@ -225,40 +316,22 @@ export function CampusMap({
     action();
   }
 
-  function handleRoomClick(room) {
-    const drag = lastDragRef.current;
-
-    if (drag?.moved > DRAG_THRESHOLD && Date.now() - (drag.endedAt ?? 0) < 180) {
-      return;
-    }
-
-    onSelectRoom(room);
-  }
-
   function handleCampusSelect(campusName) {
     setIsCampusMenuOpen(false);
     onCampusChange(campusName);
   }
 
   return (
-    <section className="map-shell" id="live-map" aria-label="Интерактивная карта вуза">
+    <section className="map-shell" id="live-map" aria-label={copy.aria}>
       <div className="map-header">
         <div>
-          <p className="eyebrow">Интерактивная карта кампуса</p>
-          <h2>{campus.shortName}: схема аудиторий</h2>
-          <div className="map-title-row">
-            <p className="map-subtitle">{campus.description}</p>
-            <span className={`map-precision map-precision-${campus.precision ?? "approximate"}`}>
-              {(campus.precision ?? "approximate") === "exact"
-                ? "точные зоны"
-                : "приближённые зоны"}
-            </span>
-          </div>
+          <p className="eyebrow">{copy.eyebrow}</p>
+          <h2>{campus.shortName}: {copy.roomMapSuffix}</h2>
         </div>
 
         <div className="map-tools">
           <div className={`campus-select ${isCampusMenuOpen ? "is-open" : ""}`}>
-            <span>Корпус</span>
+            <span>{copy.campus}</span>
             <button
               aria-expanded={isCampusMenuOpen}
               aria-haspopup="listbox"
@@ -267,7 +340,6 @@ export function CampusMap({
               type="button"
             >
               {campus.shortName}
-              <span aria-hidden="true">⌄</span>
             </button>
             {isCampusMenuOpen ? (
               <div className="campus-select-menu" role="listbox">
@@ -287,7 +359,7 @@ export function CampusMap({
             ) : null}
           </div>
 
-          <div className="floor-switcher" aria-label="Выбор этажа">
+          <div className="floor-switcher" aria-label={copy.floorAria}>
             {floorEntries.map(([floorNumber]) => (
               <button
                 className={floorNumber === floor ? "is-active" : ""}
@@ -300,15 +372,40 @@ export function CampusMap({
             ))}
           </div>
 
+          {blockOptions.length > 1 ? (
+            <div className="room-block-filter" aria-label={copy.blockFilterAria}>
+              <span>{copy.corpus}</span>
+              <div className="room-block-filter-grid">
+                <button
+                  className={activeBlock === "all" ? "is-active" : ""}
+                  onClick={() => onBlockChange?.("all")}
+                  type="button"
+                >
+                  {copy.allBlocks}
+                </button>
+                {blockOptions.map((block) => (
+                  <button
+                    className={activeBlock === block ? "is-active" : ""}
+                    key={block}
+                    onClick={() => onBlockChange?.(block)}
+                    type="button"
+                  >
+                    {block}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           <div className="map-legend">
             <span>
-              <i className="legend-dot legend-active" /> идет пара
+              <i className="legend-dot legend-active" /> {copy.legendInUse}
             </span>
             <span>
-              <i className="legend-dot legend-highlight" /> найдено
+              <i className="legend-dot legend-highlight" /> {copy.legendFound}
             </span>
             <span>
-              <i className="legend-dot legend-free" /> аудитория
+              <i className="legend-dot legend-free" /> {copy.legendRoom}
             </span>
           </div>
         </div>
@@ -325,7 +422,7 @@ export function CampusMap({
         <div className="map-glow map-glow-right" />
         <div
           className="map-zoom-controls"
-          aria-label="Управление картой"
+          aria-label={copy.zoomAria}
           onClick={stopMapControlEvent}
           onPointerDown={stopMapControlEvent}
           onPointerUp={stopMapControlEvent}
@@ -333,25 +430,25 @@ export function CampusMap({
           onWheel={stopMapControlEvent}
         >
           <button
-            aria-label="Приблизить карту"
+            aria-label={copy.zoomIn}
             onClick={(event) => runMapControl(event, handleZoomIn)}
-            title="Приблизить"
+            title={copy.zoomIn}
             type="button"
           >
             +
           </button>
           <button
-            aria-label="Отдалить карту"
+            aria-label={copy.zoomOut}
             onClick={(event) => runMapControl(event, handleZoomOut)}
-            title="Отдалить"
+            title={copy.zoomOut}
             type="button"
           >
             -
           </button>
           <button
-            aria-label="Показать карту целиком"
+            aria-label={copy.fit}
             onClick={(event) => runMapControl(event, handleResetView)}
-            title="Показать целиком"
+            title={copy.fit}
             type="button"
           >
             fit
@@ -368,7 +465,7 @@ export function CampusMap({
           viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
         >
           <title>
-            Карта корпуса {campus.shortName}, этаж {floor}
+            {copy.campus} {campus.shortName}, {copy.floor} {floor}
           </title>
 
           <rect
@@ -415,7 +512,7 @@ export function CampusMap({
           ) : null}
 
           <g className="map-room-layer">
-            {currentFloor.rooms.map((room) => {
+            {floorRooms.map((room) => {
               const roomLessons = getLessonsForRoom(lessonRoomIndex, room);
               const activeRoomLessons = getLessonsForRoom(activeLessonRoomIndex, room);
               const currentLesson = activeRoomLessons[0] ?? roomLessons.find(
@@ -423,19 +520,19 @@ export function CampusMap({
               );
               const isActive = Boolean(currentLesson);
               const isHighlighted = getLessonsForRoom(highlightedLessonRoomIndex, room).length > 0;
-              const isSearchMatch = searchedRoomId === room.id;
+              const isSearchMatch = searchedRoomId === room.id || searchedRoomIds?.has(room.id);
               const isSelected = selectedRoomId === room.id;
               const status = isActive ? "active" : isHighlighted ? "highlighted" : "free";
-              const roomBox = getRoomBox(room);
+              const roomBox = getRoomBox(room, hasOriginalSvg);
 
               return (
                 <g
-                  aria-label={`Аудитория ${room.title}`}
+                  aria-label={`${copy.roomAriaPrefix} ${room.title}`}
                   className={`map-room-node map-room-${status} ${isSearchMatch ? "is-search-match" : ""} ${
                     isSelected ? "is-selected" : ""
                   }`}
+                  data-room-id={room.id}
                   key={room.id}
-                  onClick={() => handleRoomClick(room)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
@@ -490,22 +587,26 @@ export function CampusMap({
   );
 }
 
-function getInitialViewBox(bounds) {
-  const fitViewBox = getFitViewBox(bounds);
+function getInitialViewBox(bounds, rooms) {
+  const contentBounds = getRoomContentBounds(rooms, bounds);
+  const fitViewBox = clampViewBox(getFitViewBox(contentBounds, 0.28), bounds);
   const nextWidth = fitViewBox.width / INITIAL_ZOOM;
   const nextHeight = fitViewBox.height / INITIAL_ZOOM;
 
-  return {
-    x: fitViewBox.x + (fitViewBox.width - nextWidth) / 2,
-    y: fitViewBox.y + (fitViewBox.height - nextHeight) / 2,
-    width: nextWidth,
-    height: nextHeight,
-  };
+  return clampViewBox(
+    {
+      x: fitViewBox.x + (fitViewBox.width - nextWidth) / 2,
+      y: fitViewBox.y + (fitViewBox.height - nextHeight) / 2,
+      width: nextWidth,
+      height: nextHeight,
+    },
+    bounds,
+  );
 }
 
-function getFitViewBox(bounds) {
-  const paddingX = bounds.width * 0.04;
-  const paddingY = bounds.height * 0.04;
+function getFitViewBox(bounds, paddingRatio = 0.08) {
+  const paddingX = bounds.width * paddingRatio;
+  const paddingY = bounds.height * paddingRatio;
 
   return {
     x: bounds.minX - paddingX,
@@ -513,6 +614,101 @@ function getFitViewBox(bounds) {
     width: bounds.width + paddingX * 2,
     height: bounds.height + paddingY * 2,
   };
+}
+
+function getRoomContentBounds(rooms, fallbackBounds) {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const room of rooms) {
+    const box = getRawRoomBounds(room);
+
+    if (!box) {
+      continue;
+    }
+
+    minX = Math.min(minX, box.minX);
+    minY = Math.min(minY, box.minY);
+    maxX = Math.max(maxX, box.maxX);
+    maxY = Math.max(maxY, box.maxY);
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return fallbackBounds;
+  }
+
+  return {
+    minX,
+    minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
+}
+
+function getRawRoomBounds(room) {
+  const width = room.width ?? Math.max(92, Math.min(180, room.title.length * 16));
+  const height = room.height ?? 58;
+
+  if (room.hitbox?.matrix) {
+    const [a, b, c, d, e, f] = room.hitbox.matrix;
+    const corners = [
+      [0, 0],
+      [width, 0],
+      [0, height],
+      [width, height],
+    ].map(([x, y]) => ({
+      x: a * x + c * y + e,
+      y: b * x + d * y + f,
+    }));
+
+    const minX = Math.min(...corners.map((corner) => corner.x));
+    const minY = Math.min(...corners.map((corner) => corner.y));
+    const maxX = Math.max(...corners.map((corner) => corner.x));
+    const maxY = Math.max(...corners.map((corner) => corner.y));
+
+    return {
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: Math.max(1, maxX - minX),
+      height: Math.max(1, maxY - minY),
+    };
+  }
+
+  return {
+    minX: room.x - width / 2,
+    minY: room.y - height / 2,
+    maxX: room.x + width / 2,
+    maxY: room.y + height / 2,
+    width,
+    height,
+  };
+}
+
+function getFocusedRoomViewBox(room, bounds) {
+  const roomBounds = getRawRoomBounds(room);
+
+  if (!roomBounds || !isFiniteBox(roomBounds)) {
+    return getInitialViewBox(bounds, [room]);
+  }
+
+  const centerX = roomBounds.minX + roomBounds.width / 2;
+  const centerY = roomBounds.minY + roomBounds.height / 2;
+  const width = Math.max(roomBounds.width * 8, bounds.width / 11);
+  const height = Math.max(roomBounds.height * 8, bounds.height / 11);
+
+  return clampViewBox(
+    {
+      x: centerX - width / 2,
+      y: centerY - height / 2,
+      width,
+      height,
+    },
+    bounds,
+  );
 }
 
 function clampViewBoxSize(size, bounds) {
@@ -528,6 +724,10 @@ function clampViewBoxSize(size, bounds) {
 }
 
 function clampViewBox(next, bounds) {
+  if (!isFiniteViewBox(next)) {
+    return getFitViewBox(bounds, 0);
+  }
+
   const size = clampViewBoxSize(next, bounds);
   const extraX = size.width * 0.18;
   const extraY = size.height * 0.18;
@@ -542,6 +742,14 @@ function clampViewBox(next, bounds) {
     x: clamp(next.x, minX, Math.max(minX, maxX)),
     y: clamp(next.y, minY, Math.max(minY, maxY)),
   };
+}
+
+function isFiniteBox(box) {
+  return [box.minX, box.minY, box.maxX, box.maxY, box.width, box.height].every(Number.isFinite);
+}
+
+function isFiniteViewBox(box) {
+  return [box.x, box.y, box.width, box.height].every(Number.isFinite);
 }
 
 function clamp(value, min, max) {
@@ -564,15 +772,25 @@ function getTouchCenter(touches) {
   };
 }
 
-function getRoomBox(room) {
+function getTouchDistance(touches) {
+  const [first, second] = Array.from(touches);
+
+  if (!first || !second) {
+    return 0;
+  }
+
+  return Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
+}
+
+function getRoomBox(room, hasOriginalSvg = false) {
   if (room.hitbox?.matrix) {
     const [a, b, c, d, e, f] = room.hitbox.matrix;
     const width = room.width;
     const height = room.height;
     const transform = `matrix(${a} ${b} ${c} ${d} ${e} ${f})`;
-    const inset = Math.min(8, Math.max(2, Math.min(width, height) * 0.055));
-    const visualWidth = Math.max(12, width - inset * 2);
-    const visualHeight = Math.max(12, height - inset * 2);
+    const visualInset = getRoomVisualInset(width, height, hasOriginalSvg);
+    const visualWidth = Math.max(1, width - visualInset * 2);
+    const visualHeight = Math.max(1, height - visualInset * 2);
 
     return {
       x: 0,
@@ -581,11 +799,11 @@ function getRoomBox(room) {
       height,
       hitboxRadius: Math.min(14, Math.max(8, Math.min(width, height) * 0.16)),
       transform,
-      visualX: inset,
-      visualY: inset,
+      visualX: visualInset,
+      visualY: visualInset,
       visualWidth,
       visualHeight,
-      visualRadius: Math.min(12, Math.max(6, Math.min(visualWidth, visualHeight) * 0.15)),
+      visualRadius: Math.min(12, Math.max(6, Math.min(width, height) * 0.15)),
       visualTransform: transform,
       textTransform: transform,
       textX: width / 2,
@@ -598,6 +816,9 @@ function getRoomBox(room) {
 
   const width = room.width ?? Math.max(92, Math.min(180, room.title.length * 16));
   const height = room.height ?? 58;
+  const visualInset = getRoomVisualInset(width, height, hasOriginalSvg);
+  const visualWidth = Math.max(1, width - visualInset * 2);
+  const visualHeight = Math.max(1, height - visualInset * 2);
 
   return {
     x: room.x - width / 2,
@@ -606,10 +827,10 @@ function getRoomBox(room) {
     height,
     hitboxRadius: Math.min(14, Math.max(8, Math.min(width, height) * 0.16)),
     transform: undefined,
-    visualX: room.x - width / 2,
-    visualY: room.y - height / 2,
-    visualWidth: width,
-    visualHeight: height,
+    visualX: room.x - width / 2 + visualInset,
+    visualY: room.y - height / 2 + visualInset,
+    visualWidth,
+    visualHeight,
     visualRadius: Math.min(14, Math.max(8, Math.min(width, height) * 0.16)),
     visualTransform: undefined,
     textTransform: undefined,
@@ -619,6 +840,10 @@ function getRoomBox(room) {
     badgeX: room.x + width / 2 - 10,
     badgeY: room.y - height / 2 + 16,
   };
+}
+
+function getRoomVisualInset() {
+  return 0;
 }
 
 function getBuildingLabels(rooms) {

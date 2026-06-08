@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 
-import { getRooms, getTodaySchedule } from "../api/client.js";
+import { getRooms, getScheduleByDate } from "../api/client.js";
 
-export function useDashboardData() {
+export function useDashboardData(selectedDate) {
   const [rooms, setRooms] = useState([]);
   const [lessons, setLessons] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -16,7 +16,7 @@ export function useDashboardData() {
         setIsLoading(true);
         const [roomsData, lessonsData] = await Promise.all([
           getRooms(),
-          getTodaySchedule(),
+          getScheduleByDate(selectedDate),
         ]);
 
         if (isMounted) {
@@ -40,7 +40,7 @@ export function useDashboardData() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [selectedDate]);
 
   return { rooms, lessons, isLoading, error };
 }

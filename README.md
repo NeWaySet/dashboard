@@ -1,63 +1,71 @@
-# University Rooms Dashboard
+# Campus System Dashboard
 
-Одностраничный dashboard для просмотра занятости аудиторий вуза. Проект показывает карту корпуса, позволяет кликнуть на аудиторию и увидеть занятия в ней, а также искать сегодняшние пары по преподавателю или группе с подсветкой аудиторий на карте.
+Одностраничный dashboard для просмотра занятости аудиторий. В приложении есть интерактивная карта корпусов, поиск по аудитории, преподавателю и группе, фильтр по дате и паре, подсветка свободных/занятых/найденных аудиторий и выезжающее меню расписания аудитории.
 
 ## Состав проекта
 
 - `frontend` - React + Vite SPA.
 - `backend` - FastAPI API.
-- `docker-compose.yml` - запуск frontend и backend одной командой.
-- `frontend/src/data/mireaMap.generated.json` - сгенерированная карта корпуса `В-78` на основе `https://map.kkmbr.ru/`.
-- `frontend/src/data/campusMaps.js` - список доступных корпусов для интерфейса карты: `В-78`, `С-20`, `МП-1`.
-
-## Требования
-
-Для запуска через Docker:
-
-- Docker Desktop.
-- Docker Compose.
-
-Для локального запуска без Docker:
-
-- Node.js 20+ или 22+.
-- Python 3.12+.
-- Доступ к PostgreSQL вуза, если `DEMO_MODE=false`.
+- `database/init/001_dump_rasp.sql` - локальный SQL-дамп расписания для PostgreSQL.
+- `docker-compose.yml` - запуск PostgreSQL, backend и frontend одной командой.
 
 ## Быстрый запуск через Docker
 
-Из корня проекта выполните:
+1. Убедитесь, что Docker Desktop запущен.
+2. Из корня проекта выполните:
 
 ```bash
 docker compose up --build
 ```
 
-После запуска откройте:
+Первый запуск может занять несколько минут: PostgreSQL импортирует `database/init/001_dump_rasp.sql`.
+
+После запуска:
 
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8000
 - Swagger/OpenAPI: http://localhost:8000/docs
+- PostgreSQL из Docker: `localhost:5433`, база `dump_rasp`, пользователь `postgres`, пароль `postgres`
 
-По умолчанию проект запускается в демо-режиме, поэтому реальная база данных не нужна.
+## Если дамп не импортировался
+
+PostgreSQL выполняет файлы из `database/init` только при первом создании volume. Если контейнер базы уже запускался раньше, пересоздайте volume:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
 
 ## Настройка `.env`
 
-Создайте файл `.env` в корне проекта. Для демо-режима можно оставить так:
-
-```env
-DEMO_MODE=true
-DATABASE_URL=
-CORS_ORIGINS=http://localhost:3000,http://localhost:5173
-```
-
-Для подключения к PostgreSQL вуза:
+Файл `.env` необязателен: docker-compose уже содержит рабочие значения по умолчанию. Если нужно изменить пароль или базу, создайте `.env` по примеру:
 
 ```env
 DEMO_MODE=false
-DATABASE_URL=postgresql+asyncpg://user:password@university-db-host:5432/university_schedule
+POSTGRES_DB=dump_rasp
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_PORT=5433
 CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 ```
 
-Если база доступна только из сети вуза или через VPN, Docker нужно запускать на машине, где уже есть доступ к этой сети.
+Если хотите подключиться к базе из pgAdmin вместо контейнера `db`, задайте `DATABASE_URL`:
+
+```env
+DEMO_MODE=false
+DATABASE_URL=postgresql+asyncpg://postgres:YOUR_PASSWORD@host.docker.internal:5432/dump_rasp
+```
+
+Для локального запуска backend без Docker используйте `localhost` вместо `host.docker.internal`.
+
+## Проверка API
+
+```bash
+curl http://localhost:8000/api/health
+curl http://localhost:8000/api/rooms
+curl "http://localhost:8000/api/schedule?date=2026-06-03"
+curl "http://localhost:8000/api/search/group?query=КМБО&date=2026-06-03"
+```
 
 ## Локальный запуск без Docker
 
@@ -71,13 +79,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Backend будет доступен на:
-
-```text
-http://localhost:8000
-```
-
-Frontend в отдельном терминале:
+Frontend:
 
 ```bash
 cd frontend
@@ -85,76 +87,30 @@ npm install
 npm run dev
 ```
 
-Frontend будет доступен на:
-
-```text
-http://localhost:5173
-```
-
-Если PowerShell блокирует `npm`, используйте:
-
-```bash
-npm.cmd install
-npm.cmd run dev
-```
+Локальный frontend будет доступен на http://localhost:5173.
 
 ## Проверка сборки
-
-Frontend:
 
 ```bash
 cd frontend
 npm.cmd run build
 ```
 
-Backend:
-
 ```bash
 python -m compileall backend/app
 ```
 
-Docker Compose config:
+## Работа с БД
 
-```bash
-docker compose config
-```
+Backend адаптирован под структуру дампа:
 
-## Как работает карта
+- `sc_rasp18`, `sc_rasp18_days` - занятия и даты;
+- `sc_rasp18_rooms` - аудитории занятий;
+- `sc_rasp18_groups`, `sc_group` - учебные группы;
+- `sc_rasp18_preps`, `sc_prep` - преподаватели;
+- `sc_disc` - дисциплины.
 
-Карта корпуса `В-78` уже сгенерирована и хранится в:
-
-```text
-frontend/src/data/mireaMap.generated.json
-```
-
-Frontend связывает расписание с картой по названию аудитории: например `А-107`, `Б-210`, `В-214`. Поэтому при подключении реальной БД важно, чтобы поле аудитории в расписании совпадало с названием аудитории на карте или нормализовалось на backend.
-
-Если нужно пересобрать карту из локальной копии сайта, сначала распакуйте архив сайта в `.map-source`, затем выполните:
-
-```bash
-node scripts/extract_mirea_map.mjs
-```
-
-Для `В-78`, `С-20` и `МП-1` подключены оригинальные SVG-планы этажей с `map.kkmbr.ru`. У `В-78` дополнительно есть граф объектов аудиторий, поэтому кликабельный слой точнее. В SVG `С-20` и `МП-1` аудитории сохранены как графические элементы без `data-object`, поэтому интерактивные зоны для них пока приблизительные и могут уточняться отдельно.
-
-## Ожидаемая схема данных
-
-Backend сейчас рассчитан на простую структуру:
-
-- `rooms` - аудитории.
-- `lessons` - занятия на конкретную дату.
-
-Минимальные поля для `lessons`:
-
-- `date`
-- `starts_at`
-- `ends_at`
-- `subject`
-- `teacher`
-- `group_name`
-- `room_id`
-
-Если структура PostgreSQL вуза отличается, проще всего создать SQL view с нужными полями или адаптировать запросы в `backend/app/repository.py`.
+В dump строки лежат в mojibake-виде, например `Рђ-2` вместо `А-2`. Backend автоматически восстанавливает кириллицу при чтении данных, поэтому карта и поиск работают с нормальными названиями аудиторий, групп, преподавателей и предметов.
 
 ## Полезные команды
 
@@ -164,10 +120,10 @@ Backend сейчас рассчитан на простую структуру:
 docker compose down
 ```
 
-Пересобрать контейнеры:
+Остановить контейнеры и удалить volume PostgreSQL:
 
 ```bash
-docker compose up --build
+docker compose down -v
 ```
 
 Посмотреть логи backend:
@@ -176,8 +132,8 @@ docker compose up --build
 docker compose logs backend
 ```
 
-Посмотреть логи frontend:
+Посмотреть логи базы:
 
 ```bash
-docker compose logs frontend
+docker compose logs db
 ```
