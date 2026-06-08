@@ -23,8 +23,6 @@ docker compose up --build
 После запуска:
 
 - Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- Swagger/OpenAPI: http://localhost:8000/docs
 - PostgreSQL из Docker: `localhost:5433`, база `dump_rasp`, пользователь `postgres`, пароль `postgres`
 
 ## Если дамп не импортировался
